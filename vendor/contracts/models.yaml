@@ -1,0 +1,157 @@
+# SYNC-HEADER-BEGIN  (this block is the ONLY delta from the canonical source; the drift
+#   guard strips exactly these lines and asserts the remainder is byte-identical to the hash)
+# VENDORED COPY of agent-tools/lib/contracts/models.yaml.
+# The canonical source lives in agent-tools (rig provisions it onto a real machine). research-cli
+# was spun out of that umbrella (research-cli#1) and VENDORS the shared providers/errors libs +
+# the model manifest so this repo is self-contained — strategy B, the task-cli pattern (task-cli#34).
+#
+# DRIFT GUARD: tests/test_vendored_libs_sync.py reconstructs the canonical content from this file
+# (the SYNC-HEADER block removed) and asserts its SHA256 equals CANONICAL_SHA256 below. A local
+# edit to this copy, OR a stale copy after the canonical changes upstream, fails CI instead of
+# silently diverging.
+#
+# CANONICAL_SHA256: ece9c429aa3bd763bd0b29d7ccf8850939f13bf59695e5b1bca75316fed73d19
+# CANONICAL_AGENT_TOOLS_COMMIT: 695afcd1cd473a833d3fa9750cdfa744ce334860
+#
+# TO RE-SYNC after the canonical changes: run
+#   python scripts/resync_vendored_libs.py <path-to-agent-tools>
+# (re-copies the canonical body and refreshes CANONICAL_SHA256 + the commit above).
+# SYNC-HEADER-END
+# models.yaml — the single source of truth for the ecosystem's model board.
+#
+# Accessed via: lib/checker/model_freshness.py (the daily currency checker) reads it to
+#   know what each provider is currently PINNED to, then proposes a bump when a newer
+#   version appears. review-cli / task-cli / a future research-cli read the `roles:` /
+#   `aliases:` map to resolve a SYMBOLIC name ("architect", "vision", …) to a concrete id.
+# Validated by: lib/contracts/models.schema.json (run the checker's --validate, or any
+#   JSON-Schema validator). Keep this file and that schema in lockstep.
+#
+# Assumptions (architectural invariants — do not break silently):
+#   - Every `id` is a concrete, provider-resolvable model string (byte-exact against the
+#     provider catalog), NEVER a symbolic alias. Aliases live ONLY in roles:/aliases:.
+#   - `capabilities` is a CLOSED set (see schema enum). `vision` is load-bearing: the
+#     image-review path (#3681) filters the board to vision-capable entries, so a model
+#     WITHOUT real image input MUST NOT carry the `vision` tag. Kimi-K2.7-Code is
+#     code-specialized and has NO vision; kimi-k2p6-turbo HAS vision — get this right.
+#   - The `vision` role/alias MUST resolve only to an entry whose capabilities include
+#     `vision`. The schema cannot enforce that cross-reference; the checker --validate does.
+#   - `provider` is one of the known transport providers the checker can poll. A provider
+#     with no model-list endpoint (or no key on this machine) is skipped, never crashed.
+#
+# This is DATA, not code: review-cli's DEFAULT_BOARD seeds it, but a tool overrides via its
+# own config. Bumps are SEMI-automatic — the checker PROPOSES (a PR or a dated report); a
+# human confirms, because a newer model can regress.
+
+version: 1
+
+# ── models: per-provider current-best concrete pins ────────────────────────────────────
+# Ordered, within a provider, strongest/preferred first. `context` is the advertised input
+# window in tokens. `notes` is free-form provenance.
+models:
+  # ── Anthropic (claude) — native /v1/models, all current Claude models accept images ──
+  - id: claude-fable-5
+    provider: anthropic
+    capabilities: [vision, reasoning, code]
+    context: 200000
+    notes: "Anthropic flagship (Fable 5). review board priority 1; often paywalled."
+  - id: claude-opus-4-8
+    provider: anthropic
+    capabilities: [vision, reasoning, code]
+    context: 200000
+    notes: "Opus 4.8 — review board priority 2 + default moderator."
+
+  # ── OpenAI (codex / GPT) — native /v1/models. GPT-5.5 is the codex agentic route. ──
+  - id: gpt-5.5
+    provider: openai
+    capabilities: [vision, reasoning, code]
+    context: 400000
+    notes: "GPT-5.5. review uses the agentic `codex` CLI route over the diff-only HTTP one."
+
+  # ── Google (gemini) — native model-list (generativelanguage). Multimodal. ──
+  - id: gemini-2.5-flash
+    provider: gemini
+    capabilities: [vision, reasoning, code]
+    context: 1000000
+    notes: "Gemini 2.5 Flash — review board priority 8 (contracts lens). Multimodal."
+
+  # ── commandcode gateway (OpenAI-compatible /models) — many upstream model families ──
+  - id: moonshotai/Kimi-K2.7-Code
+    provider: commandcode
+    capabilities: [code, reasoning]
+    context: 256000
+    notes: "Kimi K2.7 CODE — code-specialized, NO vision (#3681). Do not tag vision."
+  - id: deepseek/deepseek-v4-pro
+    provider: commandcode
+    capabilities: [reasoning, code]
+    context: 128000
+    notes: "DeepSeek V4 Pro via commandcode — review board priority 7 (tests lens)."
+  - id: Qwen/Qwen3.7-Max
+    provider: commandcode
+    capabilities: [reasoning, code]
+    context: 256000
+    notes: "Qwen3.7-Max via commandcode — review board priority 6 (security lens)."
+
+  # ── Moonshot turbo (vision) — reached via commandcode/fireworks routers ──
+  - id: kimi-k2p6-turbo
+    provider: commandcode
+    capabilities: [vision, code, reasoning]
+    context: 256000
+    notes: "Kimi K2.6 turbo — HAS vision (#3681). The vision-capable Kimi seat."
+
+  # ── z.ai (Zhipu / GLM) — OpenAI-compatible /models on the Coding-Plan endpoint ──
+  - id: glm-5.2
+    provider: zai
+    capabilities: [reasoning, code]
+    context: 200000
+    notes: "GLM-5.2 — newest GLM on the z.ai Coding-Plan endpoint. review board priority 5."
+
+  # ── Fireworks / glide — OpenAI-compatible. Currently down per ops; pinned for record. ──
+  - id: accounts/fireworks/models/fable-5
+    provider: fireworks
+    capabilities: [vision, reasoning, code]
+    context: 200000
+    notes: "Fable 5 via Fireworks router. Provider currently down (glide/Fireworks ops)."
+
+# ── roles: symbolic → concrete. The lens a TOOL asks for, resolved to a real id. ────────
+# A role MUST point at an `id` that exists in `models:` above. `vision` MUST resolve to an
+# entry whose capabilities include `vision` (the checker --validate enforces this).
+roles:
+  architect: claude-fable-5          # strongest holistic reviewer
+  fast: gemini-2.5-flash             # cheap, large-context, quick
+  code: moonshotai/Kimi-K2.7-Code    # code-specialized (no vision — that's fine for code)
+  reasoning: claude-opus-4-8         # deep correctness pass
+  vision: kimi-k2p6-turbo            # MUST be vision-capable (#3681 image-review filter)
+
+# ── aliases: convenience + the <provider>:latest pointers ───────────────────────────────
+# `<provider>:latest` resolves to that provider's current-best (first) pin — the thing the
+# checker compares the live endpoint against. Same constraint: each value is a concrete id.
+aliases:
+  anthropic:latest: claude-fable-5
+  openai:latest: gpt-5.5
+  gemini:latest: gemini-2.5-flash
+  commandcode:latest: moonshotai/Kimi-K2.7-Code
+  zai:latest: glm-5.2
+  fireworks:latest: accounts/fireworks/models/fable-5
+
+# ── fallback_chain: the agent-facing, CROSS-HARNESS resilience order ─────────────────────
+# THE single source of truth for "what does the agent fall to when its main model keeps
+# erroring (rate-limit / overload / 5xx)". Every harness — cc, codex, oc, pi — reads THIS
+# one list so they all agree on the priority order; the model-error-fallback agent-hook and
+# the `model-fallback` skill both resolve the next executor from here, never from a hand-
+# copied list. The order is the priority (strongest/cheapest-preferred first); on the Nth
+# repeated model error the live executor DROPS to the next entry, and returns to the top
+# once the preferred one recovers.
+#
+# `harness` is the EXECUTOR boundary, not a `provider` in the models list above: a step
+# whose harness == the currently-running one is an in-process MODEL SWAP (claude:fable ->
+# claude:opus); a step whose harness differs RE-DISPATCHES the unit of work to that harness
+# as an executor (shell out to `opencode` / `codex exec`). `model` is the concrete id passed
+# to that harness's own model selector. This list is DATA the schema validates only loosely
+# (harness/model are free strings) because the harness names are tool wiring, not the model
+# board's closed provider enum.
+fallback_chain:
+  - { harness: claude, model: fable,    notation: "claude:fable" }   # 1 — preferred: in-harness, cheapest-capable
+  - { harness: claude, model: opus,     notation: "claude:opus" }    # 2 — in-harness swap on repeated fable errors
+  - { harness: oc,     model: GLM-5.2,  notation: "oc:GLM-5.2" }      # 3 — CROSS-HARNESS: opencode executor, different provider quota
+  - { harness: codex,  model: gpt5.5,   notation: "codex:gpt5.5" }    # 4 — CROSS-HARNESS: codex executor, last resort
+
