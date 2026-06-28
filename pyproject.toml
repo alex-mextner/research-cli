@@ -1,0 +1,53 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "research-cli"
+version = "0.1.0"
+description = "Multi-provider research/panel CLI built on the shared agent-tools providers engine (board, failover, key cascade, capability tags). A distinct tool from review-cli — research, not code review."
+readme = "README.md"
+# Match the ecosystem floor: agenttools-providers targets >=3.9.
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "Alex Mextner" }]
+keywords = ["llm", "research", "multi-model", "panel", "providers", "agent-tools"]
+
+# ZERO required runtime deps. The shared providers/errors CORE is NOT taken from PyPI: it is
+# VENDORED under vendor/ (research-cli#1, strategy B) and imported via the package shims, kept
+# single-source via the pinned-SHA drift guard (scripts/resync_vendored_libs.py). When
+# agenttools-providers / agenttools-errors are published to PyPI (strategy A — needs the CTO's
+# account), the vendored copies can be swapped for declared caret-range deps here and the
+# vendor/ sys.path shims dropped.
+dependencies = []
+
+[project.optional-dependencies]
+# yaml: needed to read a models.yaml manifest (the default board path). The CORE imports
+# PyYAML lazily, so a caller passing an in-memory registry never needs it.
+yaml = ["pyyaml"]
+test = ["pytest", "pyyaml"]
+
+[project.scripts]
+research = "research_cli.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/alex-mextner/research-cli"
+Tracking = "https://github.com/alex-mextner/research-cli/issues/1"
+
+# Discover the tool package AND the vendored libraries (so an editable/pip install makes
+# agenttools_providers / agenttools_errors importable too, alongside the checkout-time
+# vendor/ sys.path shims). The vendored model manifest (vendor/contracts/models.yaml) is
+# resolved at runtime as a filesystem path next to the package, so the editable/source
+# checkout is the supported install path (mirrors the sibling symlink-install CLIs).
+[tool.setuptools.packages.find]
+where = [".", "vendor"]
+include = ["research_cli*", "agenttools_providers*", "agenttools_errors*"]
+
+[tool.ruff]
+line-length = 100
+# The vendored tree is a byte-identical mirror of the agent-tools canonical — never lint or
+# reformat it here (the drift guard requires it stay identical; fixes land upstream).
+extend-exclude = ["vendor"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

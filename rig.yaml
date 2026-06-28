@@ -1,0 +1,11 @@
+# rig.yaml — REPO-LEVEL config only.
+# The machine-wide installs (skills, agent-hooks, git-hooks dispatcher, MCP, harness
+# auto-mode) live in the GLOBAL layer ~/.config/rig/config.yaml and are NOT repeated here.
+# This file holds only what is specific to THIS repo. The cascade is by LOCATION: global is
+# global, this committed file is the repo and overrides it.
+# Apply: rig apply.  Drift: rig status.
+
+version: 1
+
+ci:
+  enabled: false
