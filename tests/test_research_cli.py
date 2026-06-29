@@ -173,8 +173,8 @@ def test_subprocess_transport_reachability_uses_key_cascade():
     t = SubprocessTransport(env={"ANTHROPIC_API_KEY": "sk-real"})
     anthropic = ModelEntry("m", "anthropic", frozenset({"reasoning"}))
     gemini = ModelEntry("g", "gemini", frozenset({"reasoning"}))
-    assert t.is_reachable(anthropic) is True   # has a key
-    assert t.is_reachable(gemini) is False     # no GEMINI key in env
+    assert t.is_reachable(anthropic) is True  # has a key
+    assert t.is_reachable(gemini) is False  # no GEMINI key in env
 
 
 def test_subprocess_transport_unknown_provider_unreachable():
@@ -205,20 +205,15 @@ def test_subprocess_transport_runs_command_template(tmp_path):
 def test_subprocess_transport_template_preserves_shell_var():
     # A template containing a shell ${VAR} must NOT crash (str.format would KeyError on it);
     # only our {model}/{lens}/{question} placeholders are substituted, ${VAR} is left for
-    # the shell. Echo the resolved env var back to prove the shell expanded it.
+    # the shell. Echo the resolved env var back to prove the shell expanded it. The var comes
+    # from `self.env` (which the child now receives, layered over the inherited environment) —
+    # no os.environ poke needed.
     t = SubprocessTransport(
         env={"ANTHROPIC_API_KEY": "sk", "MYTOKEN": "tok-123"},
         command_template='printf "%s for {model}" "${MYTOKEN}"',
     )
     entry = ModelEntry("opus", "anthropic", frozenset({"reasoning"}))
-    # The subprocess inherits the parent env, so set it for this call's shell too.
-    import os
-
-    os.environ["MYTOKEN"] = "tok-123"
-    try:
-        out = t.ask(entry, question="q", lens="analyst", timeout=10.0)
-    finally:
-        os.environ.pop("MYTOKEN", None)
+    out = t.ask(entry, question="q", lens="analyst", timeout=10.0)
     assert "tok-123 for" in out and "opus" in out
 
 
@@ -262,6 +257,77 @@ def test_subprocess_transport_reachable_via_dotenv_file(tmp_path):
     t = SubprocessTransport(env={}, dotenv_files=(str(env_file),))
     entry = ModelEntry("m", "anthropic", frozenset({"reasoning"}))
     assert t.is_reachable(entry) is True
+
+
+def test_subprocess_transport_passes_dotenv_key_to_backend(tmp_path, monkeypatch):
+    # The .env-only fallback must reach the BACKEND, not just `is_reachable`: a key present
+    # only in a .env file (never exported) has to land in the child subprocess env, or the
+    # documented .env setup is selected then fails at call time. The backend echoes the
+    # provider env var back; without the bridge it would be empty.
+    # Clear the real key/aliases from the runner's environment so the child's inherited env
+    # cannot already carry it — the value MUST come from the .env bridge to prove the bridge.
+    for name in ("ANTHROPIC_API_KEY", "CLAUDE_API_KEY"):
+        monkeypatch.delenv(name, raising=False)
+    env_file = tmp_path / ".env"
+    env_file.write_text("ANTHROPIC_API_KEY=sk-from-file\n", encoding="utf-8")
+    t = SubprocessTransport(
+        env={},  # nothing exported — the key lives ONLY in the .env file
+        dotenv_files=(str(env_file),),
+        command_template='printf "%s for {model}" "${ANTHROPIC_API_KEY}"',
+    )
+    entry = ModelEntry("opus", "anthropic", frozenset({"reasoning"}))
+    out = t.ask(entry, question="q", lens="analyst", timeout=10.0)
+    assert "sk-from-file for" in out and "opus" in out
+
+
+def test_subprocess_transport_canonicalizes_alias_key_for_backend(monkeypatch):
+    # Review finding (Medium): a key exported only under an ALIAS name must still reach a
+    # backend that reads the CANONICAL name. For anthropic the cascade is
+    # (ANTHROPIC_API_KEY, CLAUDE_API_KEY); if the operator exports only CLAUDE_API_KEY,
+    # is_reachable() marks the seat reachable, so _subprocess_env() must publish the resolved
+    # value under the canonical ANTHROPIC_API_KEY — otherwise the seat is "selected then fails
+    # at call time", the exact class this bridge exists to prevent.
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("CLAUDE_API_KEY", raising=False)
+    t = SubprocessTransport(
+        env={"CLAUDE_API_KEY": "sk-via-alias"},  # only the alias is set, not the canonical name
+        command_template='printf "%s for {model}" "${ANTHROPIC_API_KEY}"',
+    )
+    entry = ModelEntry("opus", "anthropic", frozenset({"reasoning"}))
+    assert t.is_reachable(entry) is True  # the alias makes the seat reachable
+    out = t.ask(entry, question="q", lens="analyst", timeout=10.0)
+    assert "sk-via-alias for" in out and "opus" in out  # canonical var carries the alias value
+
+
+def test_subprocess_transport_child_inherits_process_env(tmp_path, monkeypatch):
+    # Regression guard (review finding): passing an explicit env= to subprocess.run must NOT
+    # strip the inherited process environment. A backend that is a PATH lookup (a real CLI,
+    # not a shell builtin) would become "command not found" if PATH were dropped. With a
+    # partial env= (only the provider key), PATH/HOME and any other inherited var must still
+    # reach the child. We assert a non-key marker var set in the real environment survives.
+    monkeypatch.setenv("RESEARCH_INHERIT_MARKER", "inherited-ok")
+    t = SubprocessTransport(
+        env={"ANTHROPIC_API_KEY": "sk"},  # a curated, PARTIAL env — no PATH, no marker
+        command_template='printf "%s for {model}" "${RESEARCH_INHERIT_MARKER}"',
+    )
+    entry = ModelEntry("opus", "anthropic", frozenset({"reasoning"}))
+    out = t.ask(entry, question="q", lens="analyst", timeout=10.0)
+    assert "inherited-ok for" in out and "opus" in out
+
+
+def test_subprocess_transport_env_var_beats_dotenv_for_backend(tmp_path):
+    # Precedence parity with the cascade (env beats .env): a real env var must NOT be
+    # overwritten by a different value sitting in the .env file when building the child env.
+    env_file = tmp_path / ".env"
+    env_file.write_text("ANTHROPIC_API_KEY=sk-from-file\n", encoding="utf-8")
+    t = SubprocessTransport(
+        env={"ANTHROPIC_API_KEY": "sk-from-env"},
+        dotenv_files=(str(env_file),),
+        command_template='printf "%s" "${ANTHROPIC_API_KEY}"',
+    )
+    entry = ModelEntry("opus", "anthropic", frozenset({"reasoning"}))
+    out = t.ask(entry, question="q", lens="analyst", timeout=10.0)
+    assert out == "sk-from-env"
 
 
 def test_stub_transport_records_calls_and_returns_canned():
@@ -346,9 +412,7 @@ def test_engine_pool_size_zero_or_negative_asks_all_reachable():
     # reachable". Guard that contract through the engine.
     t = StubTransport()
     for ps in (0, -1):
-        engine = ResearchEngine(
-            transport=t, registry=_registry(), board=_board(), pool_size=ps
-        )
+        engine = ResearchEngine(transport=t, registry=_registry(), board=_board(), pool_size=ps)
         result = engine.run("q")
         assert len(result.answered) == 3  # the whole board
 
