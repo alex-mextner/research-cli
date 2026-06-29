@@ -126,15 +126,57 @@ class SubprocessTransport:
         if self.command_template is None:
             self.command_template = self.env.get("RESEARCH_BACKEND_CMD") or None
 
-    def is_reachable(self, entry: ModelEntry) -> bool:
-        cascade = key_cascade_for(entry.provider)
+    def _cascade_for(self, provider: str):
+        """The provider's key cascade, rebound to honor ``dotenv_files`` (or None)."""
+        cascade = key_cascade_for(provider)
         if cascade is None:
-            return False
+            return None
         from pathlib import Path  # local: keep module-top import-clean
 
         files = tuple(Path(p) for p in self.dotenv_files)
-        cascade = type(cascade)(names=cascade.names, files=files)
+        return type(cascade)(names=cascade.names, files=files)
+
+    def is_reachable(self, entry: ModelEntry) -> bool:
+        cascade = self._cascade_for(entry.provider)
+        if cascade is None:
+            return False
         return bool(cascade.resolve(env=self.env))
+
+    def _subprocess_env(self, provider: str) -> dict:
+        """The backend child's environment: live process env, ``self.env``, the resolved key.
+
+        Layered so each higher layer overrides the one below:
+
+        1. ``os.environ`` — the BASE, so PATH/HOME/proxy survive and a backend that is a PATH
+           lookup (``opencode``, ``curl``, a ``~/.cargo/bin`` tool) still resolves. The
+           pre-env= call inherited this implicitly; passing an explicit ``env=`` would drop it
+           unless we re-seed it here. (A curated ``self.env`` was only ever meant to govern key
+           RESOLUTION for ``is_reachable``, not to strip the child's PATH.)
+        2. ``self.env`` — the caller's explicit overrides on top of the inherited env.
+        3. the cascade-resolved provider key, published under the provider's CANONICAL env-var
+           name (``cascade.names[0]``) — the whole point of this method: ``is_reachable`` marks a
+           seat reachable when the key resolves via the cascade, which includes both the alias
+           names and the ``.env`` file fallback, but the child inherits an environment, not the
+           cascade. A key living only in ``.env`` (never exported), OR exported only under an
+           ALIAS name (e.g. ``CLAUDE_API_KEY`` rather than the canonical ``ANTHROPIC_API_KEY``),
+           would never reach a backend that reads the canonical var — the documented setup would
+           be selected and then fail at call time. So whenever the CANONICAL name is not already
+           populated, we resolve the key the same way ``is_reachable`` did (any alias, or the
+           ``.env`` fallback) and publish it under the canonical name. If the canonical name IS
+           already set we leave it untouched — env wins over ``.env`` and over re-canonicalizing.
+           Resolving against ``self.env`` (not live ``os.environ``) keeps this consistent with
+           ``is_reachable``'s own reachability decision.
+        """
+        child = {**os.environ, **self.env}
+        cascade = self._cascade_for(provider)
+        if cascade is None or not cascade.names:
+            return child
+        canonical = cascade.names[0]
+        if not (child.get(canonical, "") or "").strip():
+            resolved = cascade.resolve(env=self.env)
+            if resolved:
+                child[canonical] = resolved
+        return child
 
     def ask(self, entry: ModelEntry, *, question: str, lens: str, timeout: float) -> str:
         if not self.command_template:
@@ -163,6 +205,7 @@ class SubprocessTransport:
                 capture_output=True,
                 text=True,
                 timeout=timeout,
+                env=self._subprocess_env(entry.provider),
             )
         except subprocess.TimeoutExpired as exc:
             raise TransportError(f"{entry.id}: timed out after {timeout:g}s") from exc
